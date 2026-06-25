@@ -15,8 +15,8 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 def home():
     return "Fibo ABU JOD Telegram Webhook is running."
 
-@app.post("/webhook")
-def webhook():
+@app.post("/webhook1")
+def webhook1():
 
     if not BOT_TOKEN:
         return jsonify({
@@ -41,22 +41,11 @@ def webhook():
         timeout=20,
     )
 
-    res2 = requests.post(
-        f"{TELEGRAM_API}/sendMessage",
-        json={
-            "chat_id": CHAT_ID_2,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=20,
-    )
+
 
     return jsonify({
 "ok1": res1.ok,
-"ok2": res2.ok,
-"text1": res1.text,
-"text2": res2.text
+
     }), 200
 
 if __name__ == "__main__":
