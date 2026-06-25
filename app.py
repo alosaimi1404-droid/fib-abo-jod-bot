@@ -6,8 +6,8 @@ app = Flask(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-CHAT_ID_1 = "-1003967291753"
-CHAT_ID_2 = "-1004452443322"
+CHAT_ID_1 = os.getenv("CHAT_ID_1")
+CHAT_ID_2 = os.getenv("CHAT_ID_2")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
