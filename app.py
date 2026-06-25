@@ -11,26 +11,28 @@ CHAT_ID_2 = os.getenv("CHAT_ID_2")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+
 @app.get("/")
 def home():
     return "Fibo ABU JOD Telegram Webhook is running."
 
-@app.post("/webhook1")
-def webhook1():
 
-    if not BOT_TOKEN:
-        return jsonify({
-            "ok": False,
-            "error": "BOT_TOKEN is missing"
-        }), 500
-
+def get_message():
     data = request.get_json(silent=True) or {}
     message = data.get("message") or data.get("text") or ""
 
     if not message:
         message = request.get_data(as_text=True) or "Empty TradingView alert"
 
-    res1 = requests.post(
+    return message
+
+
+@app.post("/webhook1")
+def webhook1():
+
+    message = get_message()
+
+    res = requests.post(
         f"{TELEGRAM_API}/sendMessage",
         json={
             "chat_id": CHAT_ID_1,
@@ -41,12 +43,33 @@ def webhook1():
         timeout=20,
     )
 
+    return jsonify({
+        "ok": res.ok,
+        "response": res.text
+    }), 200
 
+
+@app.post("/webhook2")
+def webhook2():
+
+    message = get_message()
+
+    res = requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        json={
+            "chat_id": CHAT_ID_2,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        },
+        timeout=20,
+    )
 
     return jsonify({
-"ok1": res1.ok,
-
+        "ok": res.ok,
+        "response": res.text
     }), 200
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
