@@ -53,7 +53,10 @@ def webhook():
     )
 
     return jsonify({
-        "ok": res1.ok and res2.ok
+"ok1": res1.ok,
+"ok2": res2.ok,
+"text1": res1.text,
+"text2": res2.text
     }), 200
 
 if __name__ == "__main__":
