@@ -2,6 +2,7 @@ import io
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlencode
 
 import requests
 from flask import Flask, jsonify, request
@@ -19,20 +20,20 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHAT_ID_1 = os.getenv("CHAT_ID_1")
 CHAT_ID_2 = os.getenv("CHAT_ID_2")
 
-CHART_URL = os.getenv(
-    "CHART_URL",
-    "https://ar.tradingview.com/chart/J9HYuv1U/?symbol=CAPITALCOM%3AXAUUSD",
+# رابط تخطيط TradingView فقط، بدون symbol.
+CHART_BASE_URL = os.getenv(
+    "CHART_BASE_URL",
+    "https://ar.tradingview.com/chart/J9HYuv1U/",
 )
+
 SCREENSHOT_WAIT_MS = int(os.getenv("SCREENSHOT_WAIT_MS", "9000"))
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-
-# يعيد الـ Webhook الرد فورًا، ثم ينفذ التصوير والإرسال في الخلفية.
 executor = ThreadPoolExecutor(max_workers=2)
 
 
 @app.get("/")
 def home():
-    return "Fibo ABU JOD Telegram Webhook with chart screenshot is running."
+    return "Fibo ABU JOD dynamic TradingView screenshot webhook is running."
 
 
 @app.get("/health")
@@ -40,19 +41,40 @@ def health():
     return jsonify({"ok": True}), 200
 
 
-def get_message() -> str:
-    data = request.get_json(silent=True) or {}
-    message = data.get("message") or data.get("text") or ""
+def get_alert_data():
+    """
+    يقبل JSON بالشكل:
+    {
+      "message": "...",
+      "symbol": "CAPITALCOM:XAUUSD",
+      "interval": "5"
+    }
 
-    if not message:
-        message = request.get_data(as_text=True) or "Empty TradingView alert"
+    وإذا وصل نص عادي، يرسله كما هو ويستخدم الذهب كخيار احتياطي.
+    """
+    data = request.get_json(silent=True)
 
-    return str(message)
+    if isinstance(data, dict):
+        message = str(data.get("message") or data.get("text") or "")
+        symbol = str(data.get("symbol") or "CAPITALCOM:XAUUSD")
+        interval = str(data.get("interval") or "5")
+        return message or "Empty TradingView alert", symbol, interval
+
+    raw = request.get_data(as_text=True) or "Empty TradingView alert"
+    return raw, "CAPITALCOM:XAUUSD", "5"
 
 
-def capture_chart() -> bytes:
-    """Open TradingView in headless Chromium and return a PNG screenshot."""
-    logger.info("Opening TradingView chart")
+def build_chart_url(symbol: str, interval: str) -> str:
+    query = urlencode({
+        "symbol": symbol,
+        "interval": interval,
+    })
+    return f"{CHART_BASE_URL.rstrip('/')}/?{query}"
+
+
+def capture_chart(symbol: str, interval: str) -> bytes:
+    chart_url = build_chart_url(symbol, interval)
+    logger.info("Opening chart: %s", chart_url)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
@@ -72,15 +94,12 @@ def capture_chart() -> bytes:
             )
 
             page.goto(
-                CHART_URL,
+                chart_url,
                 wait_until="domcontentloaded",
                 timeout=60_000,
             )
-
-            # أعطِ الرسم والمؤشر وقتًا كافيًا للتحميل.
             page.wait_for_timeout(SCREENSHOT_WAIT_MS)
 
-            # محاولة إغلاق نوافذ الموافقة أو الإعلانات إن ظهرت.
             possible_buttons = [
                 "button:has-text('Accept all')",
                 "button:has-text('Accept')",
@@ -89,6 +108,7 @@ def capture_chart() -> bytes:
                 "button[aria-label='Close']",
                 "button[aria-label='إغلاق']",
             ]
+
             for selector in possible_buttons:
                 try:
                     locator = page.locator(selector).first
@@ -97,21 +117,22 @@ def capture_chart() -> bytes:
                 except Exception:
                     pass
 
-            # لقطة ثابتة وواضحة للشاشة الحالية.
-            image = page.screenshot(
+            return page.screenshot(
                 type="png",
                 full_page=False,
                 animations="disabled",
             )
-            logger.info("Chart screenshot captured")
-            return image
         finally:
             browser.close()
 
 
 def telegram_post(method: str, *, data=None, files=None, timeout=40):
-    url = f"{TELEGRAM_API}/{method}"
-    response = requests.post(url, data=data, files=files, timeout=timeout)
+    response = requests.post(
+        f"{TELEGRAM_API}/{method}",
+        data=data,
+        files=files,
+        timeout=timeout,
+    )
     response.raise_for_status()
     return response
 
@@ -127,13 +148,11 @@ def send_text(chat_id: str, message: str) -> None:
     try:
         telegram_post("sendMessage", data=payload, timeout=25)
     except requests.RequestException:
-        # إذا احتوت الرسالة على HTML غير صالح، أرسلها كنص عادي.
         payload.pop("parse_mode", None)
         telegram_post("sendMessage", data=payload, timeout=25)
 
 
 def send_photo(chat_id: str, message: str, image: bytes) -> None:
-    # حد Telegram لوصف الصورة هو 1024 حرفًا.
     caption = message[:1024]
     remainder = message[1024:]
 
@@ -142,58 +161,63 @@ def send_photo(chat_id: str, message: str, image: bytes) -> None:
         "caption": caption,
         "parse_mode": "HTML",
     }
-    files = {
-        "photo": ("tradingview-chart.png", io.BytesIO(image), "image/png"),
-    }
 
     try:
-        telegram_post("sendPhoto", data=payload, files=files, timeout=50)
+        telegram_post(
+            "sendPhoto",
+            data=payload,
+            files={"photo": ("chart.png", io.BytesIO(image), "image/png")},
+            timeout=50,
+        )
     except requests.RequestException:
-        # إعادة المحاولة من دون HTML.
         payload.pop("parse_mode", None)
-        files = {
-            "photo": ("tradingview-chart.png", io.BytesIO(image), "image/png"),
-        }
-        telegram_post("sendPhoto", data=payload, files=files, timeout=50)
+        telegram_post(
+            "sendPhoto",
+            data=payload,
+            files={"photo": ("chart.png", io.BytesIO(image), "image/png")},
+            timeout=50,
+        )
 
     if remainder:
         send_text(chat_id, remainder)
 
 
-def process_alert(chat_id: str, message: str) -> None:
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN is missing")
-        return
-
-    if not chat_id:
-        logger.error("Chat ID is missing")
+def process_alert(chat_id: str, message: str, symbol: str, interval: str) -> None:
+    if not BOT_TOKEN or not chat_id:
+        logger.error("BOT_TOKEN or chat ID is missing")
         return
 
     try:
-        image = capture_chart()
+        image = capture_chart(symbol, interval)
         send_photo(chat_id, message, image)
-        logger.info("Photo alert sent to chat %s", chat_id)
+        logger.info("Photo sent: %s %s", symbol, interval)
     except Exception:
-        logger.exception("Screenshot failed; sending text alert instead")
+        logger.exception("Screenshot failed; sending text instead")
         try:
             send_text(chat_id, message)
         except Exception:
-            logger.exception("Text fallback also failed")
+            logger.exception("Text fallback failed")
 
 
-def queue_alert(chat_id: str, message: str):
-    executor.submit(process_alert, chat_id, message)
-    return jsonify({"ok": True, "queued": True}), 200
+def queue_alert(chat_id: str):
+    message, symbol, interval = get_alert_data()
+    executor.submit(process_alert, chat_id, message, symbol, interval)
+    return jsonify({
+        "ok": True,
+        "queued": True,
+        "symbol": symbol,
+        "interval": interval,
+    }), 200
 
 
 @app.post("/webhook1")
 def webhook1():
-    return queue_alert(CHAT_ID_1, get_message())
+    return queue_alert(CHAT_ID_1)
 
 
 @app.post("/webhook2")
 def webhook2():
-    return queue_alert(CHAT_ID_2, get_message())
+    return queue_alert(CHAT_ID_2)
 
 
 if __name__ == "__main__":
